@@ -3,6 +3,10 @@ var uuid = Npm.require('node-uuid');
 var bsplit = Npm.require('buffer-split');
 var ProtoBuf = Npm.require("protobufjs");
 var path = Npm.require('path');
+var SoxCommand = require('sox-audio');
+const {Transform} = require('stream');
+const fs = require('fs');
+const npmFibers = Npm.require('fibers');
 
 var Protobuf = ProtoBuf.loadProtoFile({
     root: path.dirname(Assets.absoluteFilePath('private/voiceproxy.proto')),
@@ -36,7 +40,7 @@ YandexSpeech = class YandexSpeech extends WrappedEventEmitter{
 
         this.client = new net.Socket();
         this.client.connect(80, 'voice-stream.voicetech.yandex.net', function() {
-            console.log('connected');
+            self.client.setNoDelay(true);
             self.client.write([
                 'GET /asr_partial HTTP/1.1\r\n',
                 'User-Agent:KeepAliveClient\r\n',
@@ -85,6 +89,7 @@ YandexSpeech = class YandexSpeech extends WrappedEventEmitter{
                             var data = Protobuf.BasicProtobuf.ConnectionResponse.decode(parts[1]);
                             console.log(data);
                             console.error(e);
+                            self.emit('error',e);
                             //console.error(data);
                             //console.log(data.toString('utf8'));
                         }
@@ -115,8 +120,86 @@ YandexSpeech = class YandexSpeech extends WrappedEventEmitter{
         this.client.on('error',function(err){
             console.log('this.client.on(\'error\'');
             console.error(err);
+            this.emit('error',err);
             self.end();
         });
+
+        if(options.log&&SoxCommand&&typeof MalibunFiles!=='undefined'){
+            let logModel = {
+                phone:safeGet(options,'phone',null),
+                topic:this.topic,
+                recognize:[],
+                recognizedText:null,
+                error:null,
+                created:new Date(),
+                malibun_file_id:null,
+            };
+            this.inputVoiceStream = new Transform({
+                transform(chunk, encoding, callback) {
+                    callback(null,chunk);
+                }
+            });
+            this.once('error',(err)=>{
+                logModel.error = String(err);
+            });
+            this.once('end',()=>{
+                this.inputVoiceStream.end();
+            });
+
+            var futureFile = MalibunFiles.createNew(
+                'wav',
+                {
+                    expires: new Date( Date.now()+7*24*3600*1000 ),
+                    type:'recognition'
+                },
+                null,//userId
+                null,//path
+                `recognize${formatRuDateTime(new Date())}.wav`
+            );
+
+            this.on('recognize',(text,endOfUtt)=>{
+                logModel.recognize.push({
+                    text:text,endOfUtt:endOfUtt
+                });
+            });
+
+            var onEnd = _.once(function(){
+                npmFibers(function(){
+                    futureFile.save().finally((err,file)=>{
+                        logModel.malibun_file_id = safeGet(file,'_id',null);
+                        logModel.recognizedText = _.map(logModel.recognize,(asrItem)=>{
+                            return `${asrItem.text}`;
+                        }).join('\n');
+                        AsrLogs.insert(logModel);
+                    });
+                }).run();
+            });
+
+            var command = SoxCommand({captureStderr:true});
+            command.input(this.inputVoiceStream)
+                .inputEncoding('signed')
+                .inputSampleRate(Number(this.bitrate))
+                .inputBits(16)
+                .inputChannels(1)
+                .inputFileType('raw')
+                .output( futureFile.path  )
+                .outputBits(16)
+                .outputSampleRate(Number(this.bitrate))
+                .outputChannels(1)
+                .outputFileType('wav');
+
+
+
+
+            command.on('error', function(err, stdout, stderr) {
+                onEnd();
+            });
+            command.on('end', function() {
+                onEnd();
+            });
+            command.run();
+        }
+
     }
 
     sendMessage(msg, socket) {
@@ -173,6 +256,9 @@ YandexSpeech = class YandexSpeech extends WrappedEventEmitter{
         });
         this.STATE.queue(1);
         this.sendMessage(msg, this.client);
+        if(this.inputVoiceStream){
+            this.inputVoiceStream.write(chunk);
+        }
     }
 
     end(){

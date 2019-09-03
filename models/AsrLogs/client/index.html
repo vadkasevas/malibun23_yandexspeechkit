@@ -1,0 +1,31 @@
+<template name="asrLogsIndex">
+    {{> breadcrumb}}
+
+    {{#malibunSpoiler name="Выборка"}}
+        {{>Template.dynamic template="querybuilder" data=querybuilderData}}
+    {{/malibunSpoiler}}
+
+    {{> pagesNav}}
+    {{> pages}}
+    {{> pagesNav}}
+
+</template>
+
+<template name="asrLogsRow">
+    <tr class="asrLogsRow">
+        <td class="name">{{phone}}</td>
+        <td>{{formatRuDateTime created}}</td>
+        <td>{{topic}}</td>
+        <td>{{{recognizeHTML}}}</td>
+        <td>
+            {{#if malibun_file_id}}
+                <audio controls src="/callrecord/{{malibun_file_id}}"></audio>
+            {{/if}}
+        </td>
+        <td>{{error}}</td>
+        <td>{{>deleteButton collection="AsrLogs" model=this label="Удалить"
+                confirm="Действительно удалить \"{name}\"?"
+                success="\"{name}\" удален"}}
+        </td>
+    </tr>
+</template>
